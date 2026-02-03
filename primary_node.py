@@ -166,10 +166,33 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
             "primes_truncated": bool(resp.get("primes_truncated", False)),
         }
 
+    failed_slices: List[Tuple[int, int]] = []
+
     with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
-        futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
+        futs = {ex.submit(call_node, node, sl): (node, sl) for node, sl in zip(nodes_sorted, slices)}
         for f in as_completed(futs):
-            per_node_results.append(f.result())
+            node, sl = futs[f]
+            try:
+                per_node_results.append(f.result())
+            except Exception as e:
+                print(f"Node {node['node_id']} failed for slice {sl}: {e}")
+                failed_slices.append(sl)
+
+    if failed_slices:
+        active = REGISTRY.active_nodes()
+        if active:
+            print(f"Redistributing {len(failed_slices)} failed slice(s) to {len(active)} active node(s)")
+            with ThreadPoolExecutor(max_workers=min(32, len(active))) as ex:
+                futs = {ex.submit(call_node, active[i % len(active)], sl): sl for i, sl in enumerate(failed_slices)}
+                for f in as_completed(futs):
+                    sl = futs[f]
+                    try:
+                        per_node_results.append(f.result())
+                    except Exception as e:
+                        print(f"Redistribution failed for slice {sl}: {e}")
+                        raise RuntimeError(f"slice {sl} failed after retry")
+        else:
+            raise RuntimeError("all secondary nodes failed")
 
     per_node_results.sort(key=lambda r: r["slice"][0])
 
