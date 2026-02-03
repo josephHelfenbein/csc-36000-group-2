@@ -151,7 +151,7 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError(f"node {node['node_id']} error: {resp}")
         
         node_elapsed_s = float(resp.get("elapsed_seconds", 0.0))
-        print(f"Node ID: {node["node_id"]} completed in: {node_elapsed_s}")
+        print(f"Node ID: {node['node_id']} completed in: {node_elapsed_s}")
 
         return {
             "node_id": node["node_id"],
