@@ -1,7 +1,0 @@
-primary_node.py:
-print(f"Node ID: {node["node_id"]} completed in: {node_elapsed_s}")
-                          ^^^^^^^
-SyntaxError: f-string: unmatched '['
-
-primary_node.py: SyntaxError in f-string fixed (used single quotes inside f-string)
-secondary_node.py: Connection refused error occurs if primary node not started first

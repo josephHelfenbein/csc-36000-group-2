@@ -58,6 +58,12 @@ class Registry:
             for nid in stale:
                 del self.nodes[nid]
             return list(self.nodes.values())
+        
+    # method to Remove failed nodes from the registry
+    def remove(self, node_id: str) -> None:
+        with self.lock:
+            if node_id in self.nodes:
+                del self.nodes[node_id]
 
 
 REGISTRY = Registry(ttl_s=120)
@@ -123,6 +129,7 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     per_node_results: List[Dict[str, Any]] = []
     total_primes = 0
+    failed_slices: List[Tuple[Dict[str, Any], Tuple[int, int]]] = []
     primes_sample: List[int] = []
     primes_truncated = False
     max_prime = -1
@@ -166,10 +173,40 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
             "primes_truncated": bool(resp.get("primes_truncated", False)),
         }
 
+    """
     with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
         futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
         for f in as_completed(futs):
             per_node_results.append(f.result())
+    """
+
+    # ===================== NEW FAILURE-HANDLING CODE =====================
+    with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
+        future_map = {
+            ex.submit(call_node, node, sl): (node, sl)
+            for node, sl in zip(nodes_sorted, slices)
+        }
+
+        for f in as_completed(future_map):
+            node, sl = future_map[f]
+            try:
+                per_node_results.append(f.result())
+            except Exception as e:
+                print(f"[primary_node] Node {node['node_id']} failed: {e}")
+                REGISTRY.remove(node["node_id"])
+                failed_slices.append((node, sl))
+
+    # Reassign failed slices to remaining healthy nodes
+    for failed_node, sl in failed_slices:
+        healthy_nodes = REGISTRY.active_nodes()
+        if not healthy_nodes:
+            continue
+        retry_node = healthy_nodes[0]
+        try:
+            per_node_results.append(call_node(retry_node, sl))
+        except Exception as e:
+            print(f"[primary_node] Retry failed for slice {sl}: {e}")
+    # =====================================================================
 
     per_node_results.sort(key=lambda r: r["slice"][0])
 
@@ -214,6 +251,7 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
         resp["per_node"] = per_node_results
 
     return resp
+
 
 
 class Handler(BaseHTTPRequestHandler):

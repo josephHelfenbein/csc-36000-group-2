@@ -1,0 +1,9 @@
+The primary node controls the whole computation.
+Secondary nodes help by doing parts of the work.
+The primary node divides the work and sends it to the secondary nodes.
+All nodes work at the same time to finish faster.
+If a secondary node stops working or crashes, the primary node notices.
+The failed node is removed so it won’t be used again.
+The unfinished work from the failed node is sent to another working node.
+The system keeps running without stopping.
+This makes the distributed system more reliable and fault tolerant.
