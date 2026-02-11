@@ -8,7 +8,7 @@ Notes
 python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec single --time --mode count
 python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec threads --time --mode count
 python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec processes --time --mode count
-python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec distributed --time --mode count --secondary-exec processes --primary http://127.0.0.1:9200
+python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec distributed --time --mode count --secondary-exec processes --primary 127.0.0.1:50051
 """
 from __future__ import annotations
 
@@ -21,6 +21,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from typing import List, Tuple
 from primes_in_range import get_primes
+
+# NEW: gRPC imports
+import grpc
+import coordinator_pb2
+import coordinator_pb2_grpc
 
 
 def iter_ranges(low: int, high: int, chunk: int) -> List[Tuple[int, int]]:
@@ -64,7 +69,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--time", action="store_true")
 
     # Distributed options
-    ap.add_argument("--primary", default=None, help="Primary URL, e.g. http://134.74.160.1:9200")
+    ap.add_argument("--primary", default=None, help="Primary target, e.g. 127.0.0.1:50051")
     ap.add_argument("--secondary-exec", choices=["single", "threads", "processes"], default="processes")
     ap.add_argument("--secondary-workers", type=int, default=None)
     ap.add_argument("--include-per-node", action="store_true")
@@ -84,19 +89,54 @@ def main(argv: list[str]) -> int:
             return 2
 
         t0 = time.perf_counter()
-        payload = {
-            "low": args.low,
-            "high": args.high,
-            "mode": "list" if return_list else "count",
-            "chunk": args.chunk,
-            "secondary_exec": args.secondary_exec,
-            "secondary_workers": args.secondary_workers,
-            "max_return_primes": args.max_return_primes,
-            "include_per_node": args.include_per_node,
-        }
-        url = args.primary.rstrip("/") + "/compute"
-        resp = _post_json(url, payload, timeout_s=3600)
+
+        # NEW: gRPC coordinator call instead of HTTP
+        primary_target = args.primary.replace("http://", "").replace("https://", "")
+        channel = grpc.insecure_channel(primary_target)
+        stub = coordinator_pb2_grpc.CoordinatorServiceStub(channel)
+
+        try:
+            grpc_req = coordinator_pb2.ComputeRequest(
+                low=args.low,
+                high=args.high,
+                mode="list" if return_list else "count",
+                chunk=args.chunk,
+                secondary_exec=args.secondary_exec,
+                secondary_workers=args.secondary_workers or 0,
+                max_return_primes=args.max_return_primes,
+                include_per_node=args.include_per_node,
+            )
+
+            grpc_resp = stub.Compute(grpc_req, timeout=3600)
+
+        except grpc.RpcError as e:
+            print(f"Distributed gRPC error: {e.details()}", file=sys.stderr)
+            return 1
+
         t1 = time.perf_counter()
+
+        # Convert gRPC response to old dict shape
+        resp = {
+            "ok": grpc_resp.ok,
+            "total_primes": grpc_resp.total_primes,
+            "primes": list(grpc_resp.primes),
+            "primes_truncated": grpc_resp.primes_truncated,
+            "max_return_primes": grpc_resp.max_return_primes,
+            "nodes_used": grpc_resp.nodes_used,
+            "secondary_exec": grpc_resp.secondary_exec,
+        }
+
+        if args.include_per_node:
+            resp["per_node"] = [
+                {
+                    "node_id": n.node_id,
+                    "slice": list(n.slice),
+                    "total_primes": n.total_primes,
+                    "node_elapsed_s": n.node_elapsed_s,
+                    "round_trip_s": n.round_trip_s,
+                }
+                for n in grpc_resp.per_node
+            ]
 
         if not resp.get("ok"):
             print(f"Distributed error: {resp}", file=sys.stderr)
@@ -183,3 +223,4 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
