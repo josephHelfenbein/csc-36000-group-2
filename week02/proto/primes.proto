@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package primes;
+
+// =======================
+// Enums (REQUIRED)
+// =======================
+
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  COUNT = 1;
+  LIST = 2;
+}
+
+enum ExecMode {
+  EXEC_UNSPECIFIED = 0;
+  SINGLE = 1;
+  THREADS = 2;
+  PROCESSES = 3;
+}
+
+// =======================
+// Common Messages
+// =======================
+
+message Empty {}
+
+message HealthResponse {
+  bool ok = 1;
+  string status = 2;
+}
+
+// =======================
+// Node / Registry Messages
+// =======================
+
+message NodeInfo {
+  string node_id = 1;
+  string host = 2;
+  int32 port = 3;
+  int32 cpu_count = 4;
+  double last_seen = 5;
+}
+
+message RegisterNodeRequest {
+  string node_id = 1;
+  string host = 2;
+  int32 port = 3;
+  int32 cpu_count = 4;
+}
+
+message RegisterNodeResponse {
+  bool ok = 1;
+  NodeInfo node = 2;
+}
+
+message ListNodesResponse {
+  repeated NodeInfo nodes = 1;
+}
+
+// =======================
+// Worker-side RPC
+// =======================
+
+message ComputeRangeRequest {
+  int64 low = 1;
+  int64 high = 2;
+  Mode mode = 3;
+  int64 chunk = 4;
+  ExecMode exec = 5;
+  int32 workers = 6;
+  int32 max_return_primes = 7;
+}
+
+message ComputeRangeResponse {
+  bool ok = 1;
+  int64 total_primes = 2;
+  int64 max_prime = 3;
+  repeated int64 primes = 4;
+  bool primes_truncated = 5;
+  double elapsed_seconds = 6;
+  double sum_chunk_compute_seconds = 7;
+}
+
+// =======================
+// Coordinator-side RPC
+// =======================
+
+message ComputeRequest {
+  int64 low = 1;
+  int64 high = 2;
+  Mode mode = 3;
+  int64 chunk = 4;
+
+  ExecMode secondary_exec = 5;
+  int32 secondary_workers = 6;
+
+  int32 max_return_primes = 7;
+  bool include_per_node = 8;
+}
+
+message PerNodeResult {
+  string node_id = 1;
+  int64 low = 2;
+  int64 high = 3;
+  int64 total_primes = 4;
+  int64 max_prime = 5;
+  double node_elapsed_s = 6;
+  double round_trip_s = 7;
+}
+
+message ComputeResponse {
+  bool ok = 1;
+  int64 total_primes = 2;
+  int64 max_prime = 3;
+  repeated int64 primes = 4;
+  bool primes_truncated = 5;
+
+  double elapsed_seconds = 6;
+  repeated PerNodeResult per_node = 7;
+}
+
+// =======================
+// Services
+// =======================
+
+service WorkerService {
+  rpc ComputeRange (ComputeRangeRequest) returns (ComputeRangeResponse);
+  rpc Health (Empty) returns (HealthResponse);
+}
+
+service CoordinatorService {
+  rpc RegisterNode (RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc ListNodes (Empty) returns (ListNodesResponse);
+  rpc Compute (ComputeRequest) returns (ComputeResponse);
+}

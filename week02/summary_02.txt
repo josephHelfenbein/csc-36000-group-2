@@ -1,0 +1,6 @@
+Protobuf schema created using proto3 with strongly typed messages and enums (Mode, ExecMode) for WorkerService and CoordinatorService.
+Implemented WorkerService in secondary_node.py with ComputeRange and Health RPC methods using gRPC.
+Reused the existing segmented sieve prime algorithm from week 1 without modifying core computation logic.
+Replaced HTTP/JSON endpoints with gRPC transport and Protocol Buffers serialization.
+Implemented request validation and mapped invalid inputs to structured gRPC status codes (INVALID_ARGUMENT).
+Successfully tested LIST and COUNT modes, enum handling, and error cases using grpcurl against the running worker node.
