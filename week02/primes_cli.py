@@ -5,27 +5,26 @@ primes_cli.py
 Notes
 -----
 - Examples of how to run from terminal: 
-python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec single --time --mode count
-python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec threads --time --mode count
-python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec processes --time --mode count
-python3 week01/primes_cli.py --low 0 --high 100_000_0000 --exec distributed --time --mode count --secondary-exec processes --primary 127.0.0.1:50051
+python3 week02/primes_cli.py --low 0 --high 100_000_0000 --exec single --time --mode count
+python3 week02/primes_cli.py --low 0 --high 100_000_0000 --exec threads --time --mode count
+python3 week02/primes_cli.py --low 0 --high 100_000_0000 --exec processes --time --mode count
+python3 week02/primes_cli.py --low 0 --high 100_000_0000 --exec distributed --time --mode count --secondary-exec processes --primary 127.0.0.1:50051
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from typing import List, Tuple
+from urllib.parse import urlparse
 from primes_in_range import get_primes
 
-# NEW: gRPC imports
+# gRPC imports
 import grpc
-import coordinator_pb2
-import coordinator_pb2_grpc
+import primes_pb2
+import primes_pb2_grpc
 
 
 def iter_ranges(low: int, high: int, chunk: int) -> List[Tuple[int, int]]:
@@ -47,12 +46,22 @@ def _work_chunk(args: Tuple[int, int, bool]) -> Tuple[int, int, object]:
     return (a, b, res)
 
 
-def _post_json(url: str, payload: dict, timeout_s: int = 3600) -> dict:
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+def _parse_primary_target(primary: str) -> str:
+    """
+    Accept either 'host:port' or 'http://host:port' and return 'host:port'
+    suitable for grpc.insecure_channel().
+    """
+    if "://" in primary:
+        parsed = urlparse(primary)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 9200
+        return f"{host}:{port}"
+    return primary
+
+
+# Enum conversion helpers
+MODE_TO_PB = {"count": primes_pb2.COUNT, "list": primes_pb2.LIST}
+EXEC_TO_PB = {"single": primes_pb2.SINGLE, "threads": primes_pb2.THREADS, "processes": primes_pb2.PROCESSES}
 
 
 def main(argv: list[str]) -> int:
@@ -69,7 +78,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--time", action="store_true")
 
     # Distributed options
-    ap.add_argument("--primary", default=None, help="Primary target, e.g. 127.0.0.1:50051")
+    ap.add_argument("--primary", default=None, help="Primary coordinator address, e.g. 127.0.0.1:9200 or http://127.0.0.1:9200")
     ap.add_argument("--secondary-exec", choices=["single", "threads", "processes"], default="processes")
     ap.add_argument("--secondary-workers", type=int, default=None)
     ap.add_argument("--include-per-node", action="store_true")
@@ -81,6 +90,10 @@ def main(argv: list[str]) -> int:
         print("Error: --high must be > --low", file=sys.stderr)
         return 2
 
+    if args.primary and args.exec != "distributed":
+        print("Warning: --primary is set but --exec is not 'distributed'; ignoring --primary and running locally.",
+              file=sys.stderr)
+
     return_list = (args.mode == "list")
 
     if args.exec == "distributed":
@@ -90,18 +103,18 @@ def main(argv: list[str]) -> int:
 
         t0 = time.perf_counter()
 
-        # NEW: gRPC coordinator call instead of HTTP
-        primary_target = args.primary.replace("http://", "").replace("https://", "")
+        # gRPC coordinator call
+        primary_target = _parse_primary_target(args.primary)
         channel = grpc.insecure_channel(primary_target)
-        stub = coordinator_pb2_grpc.CoordinatorServiceStub(channel)
+        stub = primes_pb2_grpc.CoordinatorServiceStub(channel)
 
         try:
-            grpc_req = coordinator_pb2.ComputeRequest(
+            grpc_req = primes_pb2.ComputeRequest(
                 low=args.low,
                 high=args.high,
-                mode="list" if return_list else "count",
+                mode=MODE_TO_PB[args.mode],
                 chunk=args.chunk,
-                secondary_exec=args.secondary_exec,
+                secondary_exec=EXEC_TO_PB[args.secondary_exec],
                 secondary_workers=args.secondary_workers or 0,
                 max_return_primes=args.max_return_primes,
                 include_per_node=args.include_per_node,
@@ -110,62 +123,39 @@ def main(argv: list[str]) -> int:
             grpc_resp = stub.Compute(grpc_req, timeout=3600)
 
         except grpc.RpcError as e:
-            print(f"Distributed gRPC error: {e.details()}", file=sys.stderr)
+            print(f"Distributed gRPC error: {e.code().name}: {e.details()}", file=sys.stderr)
             return 1
 
         t1 = time.perf_counter()
 
-        # Convert gRPC response to old dict shape
-        resp = {
-            "ok": grpc_resp.ok,
-            "total_primes": grpc_resp.total_primes,
-            "primes": list(grpc_resp.primes),
-            "primes_truncated": grpc_resp.primes_truncated,
-            "max_return_primes": grpc_resp.max_return_primes,
-            "nodes_used": grpc_resp.nodes_used,
-            "secondary_exec": grpc_resp.secondary_exec,
-        }
-
-        if args.include_per_node:
-            resp["per_node"] = [
-                {
-                    "node_id": n.node_id,
-                    "slice": list(n.slice),
-                    "total_primes": n.total_primes,
-                    "node_elapsed_s": n.node_elapsed_s,
-                    "round_trip_s": n.round_trip_s,
-                }
-                for n in grpc_resp.per_node
-            ]
-
-        if not resp.get("ok"):
-            print(f"Distributed error: {resp}", file=sys.stderr)
+        if not grpc_resp.ok:
+            print(f"Distributed error: coordinator returned ok=False", file=sys.stderr)
             return 1
 
         if args.mode == "count":
-            print(int(resp.get("total_primes", 0)))
+            print(grpc_resp.total_primes)
         else:
-            primes = list(resp.get("primes", []))
-            total = int(resp.get("total_primes", len(primes)))
+            primes = list(grpc_resp.primes)
+            total = grpc_resp.total_primes
             shown = primes[: args.max_print]
             print(f"Total primes: {total}")
             print(f"First {len(shown)} primes (from returned sample):")
             print(" ".join(map(str, shown)))
-            if resp.get("primes_truncated") or total > len(primes):
-                print(f"... (returned primes are capped at {resp.get('max_return_primes', args.max_return_primes)})")
+            if grpc_resp.primes_truncated or total > len(primes):
+                print(f"... (returned primes are capped at {args.max_return_primes})")
 
         if args.time:
             print(
                 f"Elapsed seconds: {t1 - t0:.6f}  "
-                f"(exec=distributed, nodes_used={resp.get('nodes_used')}, secondary_exec={resp.get('secondary_exec')}, chunk={args.chunk})",
+                f"(exec=distributed, secondary_exec={args.secondary_exec}, chunk={args.chunk})",
                 file=sys.stderr,
             )
-            if args.include_per_node and "per_node" in resp:
+            if args.include_per_node and grpc_resp.per_node:
                 print("Per-node summary:", file=sys.stderr)
-                for r in resp["per_node"]:
+                for r in grpc_resp.per_node:
                     print(
-                        f"  {r['node_id']:>12} slice={r['slice']} primes={r['total_primes']} "
-                        f"node_elapsed={r['node_elapsed_s']:.3f}s round_trip={r['round_trip_s']:.3f}s",
+                        f"  {r.node_id:>12} slice=[{r.low}, {r.high}) primes={r.total_primes} "
+                        f"node_elapsed={r.node_elapsed_s:.3f}s round_trip={r.round_trip_s:.3f}s",
                         file=sys.stderr,
                     )
         return 0

@@ -346,7 +346,7 @@ def main() -> None:
 
     ap.add_argument("--primary", default=None, help="Primary coordinator URL, e.g. http://134.74.160.1:9200")
     ap.add_argument("--public-host", default=None, help="Host/IP to advertise to primary (default: auto-detect).")
-    ap.add_argument("--register-interval", type=int, default=3600, help="Seconds between heartbeats (default 3600).")
+    ap.add_argument("--register-interval", type=int, default=60, help="Seconds between heartbeats (default 60).")
 
     args = ap.parse_args()
 
@@ -369,9 +369,12 @@ def main() -> None:
     })
 
     if args.primary:
-        primary_parsed = urlparse(args.primary)
+        raw = args.primary
+        if "://" not in raw:
+            raw = f"http://{raw}"
+        primary_parsed = urlparse(raw)
         primary_host = primary_parsed.hostname or "127.0.0.1"
-        primary_port = primary_parsed.port or 9100  # default gRPC port if not specified
+        primary_port = primary_parsed.port or 9200  # default coordinator port
         start_registration_loop_grpc(
             primary_host,
             primary_port,

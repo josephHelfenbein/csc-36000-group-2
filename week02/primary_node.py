@@ -68,7 +68,7 @@ class Registry:
                 del self.nodes[node_id]
 
 
-REGISTRY = Registry(ttl_s=120)
+REGISTRY = Registry(ttl_s=3600)
 
 
 def split_into_slices(low: int, high: int, n: int) -> List[Tuple[int, int]]:
